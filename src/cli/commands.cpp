@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -35,6 +36,29 @@ std::filesystem::path GetHomePath() {
 
 std::filesystem::path GetPidFilePath() {
     return GetHomePath() / ".kabot" / "gateway.pid";
+}
+
+std::string ToLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+std::string ResolveCronTo(
+    const kabot::config::Config& config,
+    const std::string& channel,
+    const std::string& to) {
+    if (ToLower(to) != "user") {
+        return to;
+    }
+    const auto& allow_from = (channel == "telegram")
+        ? config.channels.telegram.allow_from
+        : config.channels.lark.allow_from;
+    if (!allow_from.empty()) {
+        return allow_from.front();
+    }
+    return to;
 }
 
 nlohmann::json BuildScheduleJson(const kabot::cron::CronSchedule& schedule) {
@@ -171,14 +195,14 @@ int RunGateway() {
             }
             return std::string("HEARTBEAT_OK");
         },
-        [&on_cron, &bus](const kabot::cron::CronJob& job) {
+        [&on_cron, &bus, &config](const kabot::cron::CronJob& job) {
             if (on_cron) {
                 return on_cron(job);
             }
             if (job.payload.deliver && !job.payload.to.empty()) {
                 kabot::bus::OutboundMessage outbound{};
                 outbound.channel = job.payload.channel.empty() ? "telegram" : job.payload.channel;
-                outbound.chat_id = job.payload.to;
+                outbound.chat_id = ResolveCronTo(config, outbound.channel, job.payload.to);
                 outbound.content = job.payload.message;
                 bus.PublishOutbound(outbound);
             }
@@ -199,7 +223,7 @@ int RunGateway() {
     on_heartbeat = [&agent](const std::string& prompt) {
         return agent.ProcessDirect(prompt, "heartbeat");
     };
-    on_cron = [&agent, &bus](const kabot::cron::CronJob& job) {
+    on_cron = [&agent, &bus, &config](const kabot::cron::CronJob& job) {
         LOG_INFO("[cron] job payload deliver={} channel={} to={} message={}",
                  (job.payload.deliver ? "true" : "false"),
                  (job.payload.channel.empty() ? "(empty)" : job.payload.channel),
@@ -208,7 +232,7 @@ int RunGateway() {
         if (job.payload.deliver) {
             kabot::bus::OutboundMessage outbound{};
             outbound.channel = job.payload.channel.empty() ? "lark" : job.payload.channel;
-            outbound.chat_id = job.payload.to;
+            outbound.chat_id = ResolveCronTo(config, outbound.channel, job.payload.to);
             outbound.content = job.payload.message;
             bus.PublishOutbound(outbound);
             return job.payload.message;
@@ -218,7 +242,7 @@ int RunGateway() {
             "cron:" + job.id);
             kabot::bus::OutboundMessage outbound{};
             outbound.channel = job.payload.channel.empty() ? "lark" : job.payload.channel;
-            outbound.chat_id = job.payload.to;
+            outbound.chat_id = ResolveCronTo(config, outbound.channel, job.payload.to);
             outbound.content = response;
             bus.PublishOutbound(outbound);
             return response;
