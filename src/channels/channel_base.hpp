@@ -18,7 +18,7 @@ public:
     virtual std::string Name() const { return name_; }
     virtual void Start() = 0;
     virtual void Stop() = 0;
-    virtual void Send(const kabot::bus::OutboundMessage& msg) = 0;
+    virtual bool Send(const kabot::bus::OutboundMessage& msg) = 0;
 
     bool IsAllowed(const std::string& sender_id) const;
     void HandleMessage(

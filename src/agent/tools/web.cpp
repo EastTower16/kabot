@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <sstream>
 #include <vector>
 
 #include "httplib.h"
 #include "nlohmann/json.hpp"
+#include "sandbox/sandbox_executor.hpp"
 
 namespace {
 
@@ -188,12 +190,30 @@ std::string ExtractPostId(const std::string& input) {
     return input.substr(0, end == std::string::npos ? std::string::npos : end);
 }
 
+std::string ShellEscape(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size() + 2);
+    escaped.push_back('\'');
+    for (char ch : value) {
+        if (ch == '\'') {
+            escaped += "'\\''";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    escaped.push_back('\'');
+    return escaped;
+}
+
 }
 
 namespace kabot::agent::tools {
 
 WebSearchTool::WebSearchTool(std::string api_key)
     : api_key_(std::move(api_key)) {}
+
+WebFetchTool::WebFetchTool(std::string workspace)
+    : workspace_(std::move(workspace)) {}
 
 std::string WebSearchTool::ParametersJson() const {
     return R"({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["query"]})";
@@ -295,28 +315,48 @@ std::string WebFetchTool::Execute(const std::unordered_map<std::string, std::str
         text_only = (value == "true" || value == "1" || value == "yes");
     }
 
-    auto parsed = ParseUrl(it->second);
-    if (parsed.host.empty()) {
+    const auto parsed = ParseUrl(it->second);
+    if (parsed.host.empty() || workspace_.empty()) {
         return "Error: invalid url";
     }
 
-    std::string scheme_host_port = parsed.https ? "https://" : "http://";
-    scheme_host_port += parsed.host + ":" + std::to_string(parsed.port);
-    httplib::Client client(scheme_host_port);
-    client.set_connection_timeout(20);
-    client.set_read_timeout(20);
-    ApplyProxy(client);
+    const auto script_path = std::filesystem::path(workspace_) / "skills" / "web" / "fetch_web.py";
+    if (!std::filesystem::exists(script_path)) {
+        return "Error: web_fetch script not found";
+    }
 
-    auto response = client.Get(parsed.path.c_str());
-    if (!response) {
-        return "Error: web_fetch request failed";
-    }
-    if (response->status >= 400) {
-        return "Error: web_fetch HTTP " + std::to_string(response->status);
-    }
-    std::string body = response->body;
+    std::ostringstream cmd;
+    cmd << "python3 " << ShellEscape(script_path.string())
+        << " --max-bytes " << max_bytes;
     if (text_only) {
-        body = StripHtml(body);
+        cmd << " --text-only";
+    }
+    cmd << " " << ShellEscape(it->second);
+
+    const auto result = kabot::sandbox::SandboxExecutor::Run(
+        cmd.str(),
+        workspace_,
+        std::chrono::seconds(90));
+
+    if (result.blocked) {
+        return result.output.empty() ? "Error: web_fetch command blocked" : result.output;
+    }
+    if (result.timed_out) {
+        return "Error: web_fetch timed out";
+    }
+    if (result.exit_code != 0) {
+        if (!result.error.empty()) {
+            return "Error: web_fetch failed: " + Truncate(result.error, max_bytes);
+        }
+        if (!result.output.empty()) {
+            return "Error: web_fetch failed: " + Truncate(result.output, max_bytes);
+        }
+        return "Error: web_fetch failed";
+    }
+
+    const auto body = result.output;
+    if (body.empty()) {
+        return "Error: web_fetch returned empty content";
     }
     return Truncate(body, max_bytes);
 }

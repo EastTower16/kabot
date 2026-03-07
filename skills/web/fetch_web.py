@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
-"""
-网页内容抓取工具
-使用 Playwright 抓取网页内容并转换为 Markdown 格式
-"""
 import sys
 import argparse
 from playwright.sync_api import sync_playwright
 import html2text
 
 
-def fetch_page_content(url: str) -> str:
-    """使用 Playwright 抓取网页内容并转换为 Markdown"""
+def truncate(content: str, max_bytes: int) -> str:
+    encoded = content.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return content
+    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return truncated + "\n...(truncated)..."
+
+
+def fetch_page_content(url: str, text_only: bool) -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.goto(url)
+        page.goto(url, wait_until="networkidle")
         html_content = page.content()
         browser.close()
-        
-        # 将 HTML 转换为 Markdown
+
         h = html2text.HTML2Text()
-        h.ignore_links = False
+        h.ignore_links = text_only
         h.ignore_images = False
         h.ignore_tables = False
-        h.body_width = 0  # 不限制行宽
+        h.ignore_emphasis = False
+        h.body_width = 0
         markdown_content = h.handle(html_content)
-        
+
         return markdown_content
 
 
@@ -33,20 +36,23 @@ def main():
     parser = argparse.ArgumentParser(description="抓取网页内容并转换为 Markdown 格式")
     parser.add_argument("url", help="要抓取的网页 URL")
     parser.add_argument("-o", "--output", help="输出文件路径（可选）")
+    parser.add_argument("--max-bytes", type=int, default=8000, help="最大输出字节数")
+    parser.add_argument("--text-only", action="store_true", help="输出纯文本模式")
     args = parser.parse_args()
 
     print(f"正在抓取: {args.url}", file=sys.stderr)
-    
+
     try:
-        content = fetch_page_content(args.url)
-        
+        content = fetch_page_content(args.url, args.text_only)
+        content = truncate(content, max(1024, min(args.max_bytes, 20000)))
+
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
                 f.write(content)
             print(f"内容已保存到: {args.output}", file=sys.stderr)
         else:
             print(content)
-            
+
     except Exception as e:
         print(f"错误: {e}", file=sys.stderr)
         sys.exit(1)

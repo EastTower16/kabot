@@ -1,9 +1,20 @@
 #include "channels/channel_manager.hpp"
 
+#include <chrono>
+#include <thread>
+
 #include "channels/lark_channel.hpp"
 #include "channels/telegram_channel.hpp"
+#include "utils/logging.hpp"
 
 namespace kabot::channels {
+
+namespace {
+
+constexpr int kMaxSendAttempts = 3;
+constexpr auto kRetryDelay = std::chrono::milliseconds(800);
+
+}  // namespace
 
 ChannelManager::ChannelManager(const kabot::config::Config& config,
                                kabot::bus::MessageBus& bus)
@@ -31,10 +42,7 @@ ChannelBase* ChannelManager::GetChannel(const std::string& name) {
 }
 
 void ChannelManager::DispatchOutbound(const kabot::bus::OutboundMessage& msg) {
-    auto channel = GetChannel(msg.channel);
-    if (channel) {
-        channel->Send(msg);
-    }
+    SendWithRetry(msg);
 }
 
 void ChannelManager::StartAll() {
@@ -65,6 +73,50 @@ std::unordered_map<std::string, bool> ChannelManager::Status() const {
     return status;
 }
 
+bool ChannelManager::SendWithRetry(const kabot::bus::OutboundMessage& msg) {
+    auto channel = GetChannel(msg.channel);
+    if (!channel) {
+        LOG_ERROR("[channel] outbound send failed: unknown channel={} chat_id={}",
+                  msg.channel,
+                  msg.chat_id);
+        return false;
+    }
+
+    const bool is_typing = [&]() {
+        auto it = msg.metadata.find("action");
+        return it != msg.metadata.end() && it->second == "typing";
+    }();
+    const int max_attempts = is_typing ? 1 : kMaxSendAttempts;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        const bool sent = channel->Send(msg);
+        if (sent) {
+            if (attempt > 1) {
+                LOG_WARN("[channel] outbound send recovered after retry channel={} chat_id={} attempt={}",
+                         msg.channel,
+                         msg.chat_id,
+                         attempt);
+            }
+            return true;
+        }
+
+        LOG_ERROR("[channel] outbound send failed channel={} chat_id={} attempt={}/{} reply_to={} content_size={} media_count={}",
+                  msg.channel,
+                  msg.chat_id,
+                  attempt,
+                  max_attempts,
+                  msg.reply_to,
+                  msg.content.size(),
+                  msg.media.size());
+
+        if (attempt < max_attempts) {
+            std::this_thread::sleep_for(kRetryDelay);
+        }
+    }
+
+    return false;
+}
+
 void ChannelManager::RegisterTelegram(const kabot::config::TelegramConfig& config) {
     if (!config.enabled) {
         return;
@@ -85,10 +137,7 @@ void ChannelManager::RunOutboundDispatcher() {
         if (!bus_.TryConsumeOutbound(msg, std::chrono::milliseconds(1000))) {
             continue;
         }
-        auto channel = GetChannel(msg.channel);
-        if (channel) {
-            channel->Send(msg);
-        }
+        SendWithRetry(msg);
     }
 }
 

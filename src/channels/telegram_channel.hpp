@@ -20,7 +20,7 @@ public:
                     kabot::bus::MessageBus& bus);
     void Start() override;
     void Stop() override;
-    void Send(const kabot::bus::OutboundMessage& msg) override;
+    bool Send(const kabot::bus::OutboundMessage& msg) override;
 
     void HandleIncomingMessage(
         const std::string& sender_id,

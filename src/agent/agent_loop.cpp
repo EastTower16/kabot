@@ -484,7 +484,7 @@ void AgentLoop::RegisterDefaultTools() {
         LOG_WARN("[web] brave api key is empty");
     }
     tools_.Register(std::make_unique<kabot::agent::tools::WebSearchTool>(config_.brave_api_key));
-    tools_.Register(std::make_unique<kabot::agent::tools::WebFetchTool>());
+    tools_.Register(std::make_unique<kabot::agent::tools::WebFetchTool>(workspace_));
     tools_.Register(std::make_unique<kabot::agent::tools::RedditFetchTool>());
     tools_.Register(std::make_unique<kabot::agent::tools::MessageTool>(
         [this](const kabot::bus::OutboundMessage& msg) {

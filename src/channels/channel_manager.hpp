@@ -24,6 +24,7 @@ public:
 
 private:
     void InitChannels();
+    bool SendWithRetry(const kabot::bus::OutboundMessage& msg);
     void RegisterTelegram(const kabot::config::TelegramConfig& config);
     void RegisterLark(const kabot::config::LarkConfig& config);
     void RunOutboundDispatcher();

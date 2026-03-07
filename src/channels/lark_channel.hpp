@@ -27,7 +27,7 @@ public:
 
     void Start() override;
     void Stop() override;
-    void Send(const kabot::bus::OutboundMessage& msg) override;
+    bool Send(const kabot::bus::OutboundMessage& msg) override;
 
 private:
     void HandleIncomingMessage(const ::lark::im::v1::MessageEvent& event);

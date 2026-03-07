@@ -113,13 +113,13 @@ void LarkChannel::Stop() {
     im_service_.reset();
 }
 
-void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
+bool LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
     if (!im_service_) {
-        return;
+        return false;
     }
     auto it_action = msg.metadata.find("action");
     if (it_action != msg.metadata.end() && it_action->second == "typing") {
-        return;
+        return true;
     }
 
     std::string receive_id = msg.chat_id;
@@ -145,8 +145,10 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
         }
     }
     if (receive_id.empty()) {
-        return;
+        return false;
     }
+
+    bool success = true;
 
     if (!msg.content.empty()) {
         const std::string msg_type = "text";
@@ -159,6 +161,7 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
                       receive_id_type,
                       msg_type,
                       msg.content);
+            success = false;
         }
     }
 
@@ -172,6 +175,7 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
             std::string image_key;
             if (!im_service_->UploadImage(media_path, &image_key)) {
                 LOG_ERROR("[lark] failed to upload image path={}", media_path);
+                success = false;
                 continue;
             }
             nlohmann::json content;
@@ -182,6 +186,7 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
                           receive_id_type,
                           image_key,
                           media_path);
+                success = false;
             }
             continue;
         }
@@ -194,6 +199,7 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
             LOG_ERROR("[lark] failed to upload file path={} file_type={}",
                       media_path,
                       file_type);
+            success = false;
             continue;
         }
 
@@ -210,8 +216,11 @@ void LarkChannel::Send(const kabot::bus::OutboundMessage& msg) {
                       file_type,
                       file_key,
                       media_path);
+            success = false;
         }
     }
+
+    return success;
 }
 
 void LarkChannel::HandleIncomingMessage(const lark::im::v1::MessageEvent& event) {
