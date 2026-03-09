@@ -1,19 +1,19 @@
 # Kabot C++
 
-
 ## 结构
 
-- `agent/` 代理核心
-- `bus/` 消息总线
-- `channels/` 渠道（当前仅规划 Telegram）
-- `cli/` 命令行入口
-- `config/` 配置加载与结构
-- `cron/` 计划任务
-- `heartbeat/` 心跳任务
-- `providers/` LLM Provider 抽象
-- `session/` 会话与状态
-- `skills/` 技能与工具
-- `utils/` 通用工具
+- `src/agent/` 代理核心
+- `src/bus/` 消息总线
+- `src/channels/` 渠道实现
+- `src/cli/` 命令行入口
+- `src/config/` 配置加载与结构
+- `src/cron/` 计划任务
+- `src/heartbeat/` 心跳任务
+- `src/providers/` LLM Provider 抽象
+- `src/session/` 会话与状态
+- `src/skills/` 技能与工具
+- `src/utils/` 通用工具
+- `openspec/` 变更提案与规格
 
 ## Cron 工具
 
