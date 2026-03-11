@@ -20,6 +20,9 @@ bool ChannelBase::IsAllowed(const std::string& sender_id) const {
     if (allow_from_.empty()) {
         return true;
     }
+    if (std::find(allow_from_.begin(), allow_from_.end(), "*") != allow_from_.end()) {
+        return true;
+    }
     if (std::find(allow_from_.begin(), allow_from_.end(), sender_id) != allow_from_.end()) {
         return true;
     }
