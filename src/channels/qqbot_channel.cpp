@@ -244,6 +244,19 @@ void QQBotChannel::PublishMessage(const std::string& sender_id,
                                   const std::string& content,
                                   std::unordered_map<std::string, std::string> metadata,
                                   TargetContext target) {
+    if (chat_id.empty()) {
+        const auto event_it = metadata.find("event_name");
+        const auto event_name = event_it != metadata.end() ? event_it->second : std::string();
+        LOG_WARN("[qqbot] publish inbound with empty chat_id event={} sender_id={} type={} channel_id={} guild_id={} group_openid={} user_openid={} message_id={}",
+                 event_name,
+                 sender_id,
+                 target.type,
+                 target.channel_id,
+                 target.guild_id,
+                 target.group_openid,
+                 target.user_openid,
+                 target.message_id);
+    }
     if (!target.type.empty()) {
         metadata["qqbot_chat_type"] = target.type;
     }
