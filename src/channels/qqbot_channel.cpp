@@ -281,6 +281,14 @@ void QQBotChannel::HandleChannelEvent(const std::string& event_name, const std::
     target.guild_id = JsonString(json, {"guild_id"});
     target.message_id = JsonString(json, {"id", "message_id"});
     target.chat_id = target.channel_id;
+    if (target.chat_id.empty()) {
+        LOG_WARN("[qqbot] inbound target missing event={} type=channel channel_id={} guild_id={} message_id={} payload={}",
+                 event_name,
+                 target.channel_id,
+                 target.guild_id,
+                 target.message_id,
+                 payload);
+    }
 
     std::unordered_map<std::string, std::string> metadata;
     metadata["event_name"] = event_name;
@@ -299,6 +307,14 @@ void QQBotChannel::HandleDirectEvent(const std::string& event_name, const std::s
     target.guild_id = JsonString(json, {"guild_id"});
     target.message_id = JsonString(json, {"id", "message_id"});
     target.chat_id = !target.guild_id.empty() ? target.guild_id : target.channel_id;
+    if (target.chat_id.empty()) {
+        LOG_WARN("[qqbot] inbound target missing event={} type=direct channel_id={} guild_id={} message_id={} payload={}",
+                 event_name,
+                 target.channel_id,
+                 target.guild_id,
+                 target.message_id,
+                 payload);
+    }
 
     const auto author = json.contains("author") && json["author"].is_object() ? json["author"] : Json::object();
     std::unordered_map<std::string, std::string> metadata;
@@ -318,6 +334,13 @@ void QQBotChannel::HandleC2CEvent(const std::string& event_name, const std::stri
     target.user_openid = JsonString(author, {"user_openid", "id"});
     target.message_id = JsonString(json, {"id", "message_id"});
     target.chat_id = target.user_openid;
+    if (target.chat_id.empty()) {
+        LOG_WARN("[qqbot] inbound target missing event={} type=c2c user_openid={} message_id={} payload={}",
+                 event_name,
+                 target.user_openid,
+                 target.message_id,
+                 payload);
+    }
 
     std::unordered_map<std::string, std::string> metadata;
     metadata["event_name"] = event_name;
@@ -335,6 +358,13 @@ void QQBotChannel::HandleGroupEvent(const std::string& event_name, const std::st
     target.group_openid = JsonString(json, {"group_openid"});
     target.message_id = JsonString(json, {"id", "message_id"});
     target.chat_id = target.group_openid;
+    if (target.chat_id.empty()) {
+        LOG_WARN("[qqbot] inbound target missing event={} type=group group_openid={} message_id={} payload={}",
+                 event_name,
+                 target.group_openid,
+                 target.message_id,
+                 payload);
+    }
 
     std::unordered_map<std::string, std::string> metadata;
     metadata["event_name"] = event_name;
