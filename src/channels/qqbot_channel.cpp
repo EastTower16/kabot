@@ -1,5 +1,7 @@
 #include "channels/qqbot_channel.hpp"
 
+#include <cstdint>
+#include <chrono>
 #include <utility>
 
 #include "nlohmann/json.hpp"
@@ -47,6 +49,13 @@ QQBotChannel::QQBotChannel(const kabot::config::QQBotConfig& config,
                   config.binding.agent)
     , config_(config) {}
 
+QQBotChannel::~QQBotChannel() {
+    try {
+        Stop();
+    } catch (...) {
+    }
+}
+
 std::string QQBotChannel::JsonString(const Json& value,
                                      std::initializer_list<const char*> keys) {
     for (const auto* key : keys) {
@@ -75,40 +84,82 @@ bool QQBotChannel::JsonBool(const Json& value,
 }
 
 void QQBotChannel::Start() {
-    if (running_) {
-        return;
-    }
-    if (config_.app_id.empty() || (config_.client_secret.empty() && config_.token.empty())) {
-        LOG_ERROR("[qqbot] app_id or credentials are empty; channel disabled");
-        running_ = false;
-        return;
-    }
+    std::shared_ptr<qqbot::openapi::v1::OpenAPIV1Client> openapi_v1;
+    std::shared_ptr<qqbot::websocket::WebSocketClient> websocket;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (running_) {
+            return;
+        }
+        external_stop_requested_ = false;
+        if (config_.app_id.empty() || (config_.client_secret.empty() && config_.token.empty())) {
+            LOG_ERROR("[qqbot] app_id or credentials are empty; channel disabled");
+            running_ = false;
+            return;
+        }
 
-    try {
+        ++callback_generation_;
+        generation = callback_generation_;
         auto openapi = qqbot::sdk::CreateOpenAPI(ToBotConfig(config_));
-        openapi_v1_ = std::dynamic_pointer_cast<qqbot::openapi::v1::OpenAPIV1Client>(openapi);
-        websocket_ = qqbot::sdk::CreateWebSocket(ToBotConfig(config_));
-        if (!openapi_v1_ || !websocket_) {
+        openapi_v1 = std::dynamic_pointer_cast<qqbot::openapi::v1::OpenAPIV1Client>(openapi);
+        websocket = qqbot::sdk::CreateWebSocket(ToBotConfig(config_));
+        if (!openapi_v1 || !websocket) {
             LOG_ERROR("[qqbot] failed to initialize openapi or websocket client");
             running_ = false;
             return;
         }
-        websocket_->SetEventHandler([this](const qqbot::websocket::GatewayEvent& event) {
-            if (event.type != qqbot::websocket::EventType::kDispatch) {
+
+        websocket->SetEventHandler([this, generation](const qqbot::websocket::GatewayEvent& event) {
+            bool active_generation = false;
+            bool active_running = false;
+            {
+                std::lock_guard<std::mutex> guard(lifecycle_mutex_);
+                active_generation = generation == callback_generation_;
+                active_running = running_;
+            }
+            if (!active_generation) {
                 return;
             }
+
             try {
-                HandleGatewayEvent(event.event_name, event.payload);
+                if (event.type == qqbot::websocket::EventType::kDispatch) {
+                    if (!active_running) {
+                        return;
+                    }
+                    HandleGatewayEvent(event.event_name, event.payload);
+                    return;
+                }
+                HandleLifecycleEvent(event, generation);
             } catch (const std::exception& ex) {
-                LOG_ERROR("[qqbot] failed to handle event {}: {}", event.event_name, ex.what());
+                LOG_ERROR("[qqbot] failed to handle websocket event {}: {}", event.event_name, ex.what());
             } catch (...) {
-                LOG_ERROR("[qqbot] failed to handle event {}", event.event_name);
+                LOG_ERROR("[qqbot] failed to handle websocket event {}", event.event_name);
             }
         });
-        websocket_->Connect();
+    }
+
+    try {
+        websocket->Connect();
+
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (generation != callback_generation_ || external_stop_requested_) {
+            try {
+                websocket->Disconnect();
+            } catch (...) {
+            }
+            return;
+        }
+
+        openapi_v1_ = std::move(openapi_v1);
+        websocket_ = std::move(websocket);
         running_ = true;
     } catch (const std::exception& ex) {
         LOG_ERROR("[qqbot] failed to start: {}", ex.what());
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (generation == callback_generation_) {
+            ++callback_generation_;
+        }
         websocket_.reset();
         openapi_v1_.reset();
         running_ = false;
@@ -116,15 +167,156 @@ void QQBotChannel::Start() {
 }
 
 void QQBotChannel::Stop() {
-    running_ = false;
-    if (websocket_) {
+    external_stop_requested_ = true;
+    StopInternal(true);
+}
+
+void QQBotChannel::StopInternal(bool external_request) {
+    std::shared_ptr<qqbot::websocket::WebSocketClient> websocket;
+    std::thread rebuild_thread;
+    {
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (!running_ && !websocket_ && !openapi_v1_) {
+            if (external_request && rebuild_thread_.joinable() && rebuild_thread_.get_id() != std::this_thread::get_id()) {
+                rebuild_thread = std::move(rebuild_thread_);
+            }
+            return;
+        }
+        running_ = false;
+        ++callback_generation_;
+        websocket = websocket_;
+        websocket_.reset();
+        openapi_v1_.reset();
+        if (external_request && rebuild_thread_.joinable() && rebuild_thread_.get_id() != std::this_thread::get_id()) {
+            rebuild_thread = std::move(rebuild_thread_);
+        }
+    }
+
+    if (websocket) {
         try {
-            websocket_->Disconnect();
+            websocket->Disconnect();
         } catch (...) {
         }
     }
-    websocket_.reset();
-    openapi_v1_.reset();
+
+    if (!external_request) {
+        ClearMessageTargetCache();
+    }
+
+    if (rebuild_thread.joinable()) {
+        rebuild_thread.join();
+    }
+}
+
+void QQBotChannel::HandleLifecycleEvent(const qqbot::websocket::GatewayEvent& event,
+                                        std::uint64_t generation) {
+    if (event.type == qqbot::websocket::EventType::kError && event.event_name == "TERMINAL") {
+        ReportTerminalState(event.event_name, event.payload);
+        ScheduleClientRebuild(generation, event.payload);
+        return;
+    }
+
+    if (event.type == qqbot::websocket::EventType::kReconnect) {
+        LOG_WARN("[qqbot] websocket reconnect event={} payload={}", event.event_name, event.payload);
+        return;
+    }
+
+    if (event.type == qqbot::websocket::EventType::kDisconnect) {
+        LOG_WARN("[qqbot] websocket disconnect event={} payload={}", event.event_name, event.payload);
+        return;
+    }
+
+    if (event.type == qqbot::websocket::EventType::kReady) {
+        LOG_INFO("[qqbot] websocket ready event={} payload={}", event.event_name, event.payload);
+        return;
+    }
+
+    LOG_WARN("[qqbot] websocket lifecycle event ignored type={} event={} payload={}",
+             static_cast<int>(event.type),
+             event.event_name,
+             event.payload);
+}
+
+void QQBotChannel::ReportTerminalState(const std::string& event_name,
+                                       const std::string& payload) {
+    LOG_ERROR("[qqbot] websocket entered terminal state event={} payload={}", event_name, payload);
+
+    kabot::bus::InboundMessage msg{};
+    msg.channel = name_;
+    msg.channel_instance = name_;
+    msg.agent_name = binding_agent_;
+    msg.sender_id = "system";
+    msg.chat_id = name_ + ":system";
+    msg.content = "qqbot websocket entered terminal state, rebuilding client";
+    msg.metadata["event_name"] = event_name;
+    msg.metadata["system_event"] = "qqbot_terminal";
+    msg.metadata["qqbot_rebuild"] = "scheduled";
+    msg.metadata["qqbot_terminal_payload"] = payload;
+    bus_.PublishInbound(msg);
+}
+
+void QQBotChannel::ScheduleClientRebuild(std::uint64_t generation,
+                                         const std::string& reason) {
+    bool expected = false;
+    if (!rebuild_in_progress_.compare_exchange_strong(expected, true)) {
+        LOG_WARN("[qqbot] terminal rebuild already in progress, skip duplicate request reason={}", reason);
+        return;
+    }
+
+    std::thread previous_thread;
+    {
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (rebuild_thread_.joinable() && rebuild_thread_.get_id() != std::this_thread::get_id()) {
+            previous_thread = std::move(rebuild_thread_);
+        }
+        rebuild_thread_ = std::thread([this, generation, reason]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+            {
+                std::lock_guard<std::mutex> guard(lifecycle_mutex_);
+                if (generation != callback_generation_ || external_stop_requested_) {
+                    rebuild_in_progress_ = false;
+                    return;
+                }
+            }
+
+            LOG_WARN("[qqbot] rebuilding websocket client after terminal state reason={}", reason);
+            StopInternal(false);
+
+            if (external_stop_requested_) {
+                rebuild_in_progress_ = false;
+                return;
+            }
+
+            try {
+                Start();
+            } catch (const std::exception& ex) {
+                LOG_ERROR("[qqbot] failed to rebuild websocket client: {}", ex.what());
+            } catch (...) {
+                LOG_ERROR("[qqbot] failed to rebuild websocket client");
+            }
+
+            rebuild_in_progress_ = false;
+        });
+    }
+
+    if (previous_thread.joinable()) {
+        previous_thread.join();
+    }
+}
+
+void QQBotChannel::TrimTargetCacheLocked() {
+    while (message_targets_.size() > kMaxMessageTargets) {
+        message_targets_.erase(message_targets_.begin());
+    }
+    while (chat_targets_.size() > kMaxChatTargets) {
+        chat_targets_.erase(chat_targets_.begin());
+    }
+}
+
+void QQBotChannel::ClearMessageTargetCache() {
+    std::lock_guard<std::mutex> guard(target_mutex_);
+    message_targets_.clear();
 }
 
 void QQBotChannel::RememberTarget(const std::string& chat_id,
@@ -137,6 +329,7 @@ void QQBotChannel::RememberTarget(const std::string& chat_id,
     if (!message_id.empty()) {
         message_targets_[message_id] = target;
     }
+    TrimTargetCacheLocked();
 }
 
 QQBotChannel::TargetContext QQBotChannel::ResolveTarget(const kabot::bus::OutboundMessage& msg) const {
@@ -187,7 +380,16 @@ QQBotChannel::TargetContext QQBotChannel::ResolveTarget(const kabot::bus::Outbou
 }
 
 bool QQBotChannel::Send(const kabot::bus::OutboundMessage& msg) {
-    if (!openapi_v1_) {
+    std::shared_ptr<qqbot::openapi::v1::OpenAPIV1Client> openapi_v1;
+    {
+        std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+        if (!running_ || !openapi_v1_) {
+            return false;
+        }
+        openapi_v1 = openapi_v1_;
+    }
+
+    if (!openapi_v1) {
         return false;
     }
     auto it_action = msg.metadata.find("action");
@@ -213,13 +415,13 @@ bool QQBotChannel::Send(const kabot::bus::OutboundMessage& msg) {
     qqbot::transport::HttpResponse response;
     try {
         if (target.type == "channel" && !target.channel_id.empty()) {
-            response = openapi_v1_->PostMessage(target.channel_id, body);
+            response = openapi_v1->PostMessage(target.channel_id, body);
         } else if (target.type == "direct" && !target.guild_id.empty()) {
-            response = openapi_v1_->PostDirectMessage(target.guild_id, body);
+            response = openapi_v1->PostDirectMessage(target.guild_id, body);
         } else if (target.type == "c2c" && !target.user_openid.empty()) {
-            response = openapi_v1_->PostC2CMessage(target.user_openid, body);
+            response = openapi_v1->PostC2CMessage(target.user_openid, body);
         } else if (target.type == "group" && !target.group_openid.empty()) {
-            response = openapi_v1_->PostGroupMessage(target.group_openid, body);
+            response = openapi_v1->PostGroupMessage(target.group_openid, body);
         } else {
             LOG_ERROR("[qqbot] outbound target missing identifier type={}", target.type);
             return false;

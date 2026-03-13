@@ -4,6 +4,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <cstdint>
+#include <thread>
 #include <unordered_map>
 
 #include "nlohmann/json.hpp"
@@ -15,6 +17,7 @@ class OpenAPIV1Client;
 }
 
 namespace qqbot::websocket {
+struct GatewayEvent;
 class WebSocketClient;
 }
 
@@ -24,6 +27,7 @@ class QQBotChannel : public ChannelBase {
 public:
     QQBotChannel(const kabot::config::QQBotConfig& config,
                  kabot::bus::MessageBus& bus);
+    ~QQBotChannel() override;
 
     void Start() override;
     void Stop() override;
@@ -41,10 +45,19 @@ private:
     };
 
     void HandleGatewayEvent(const std::string& event_name, const std::string& payload);
+    void HandleLifecycleEvent(const qqbot::websocket::GatewayEvent& event,
+                              std::uint64_t generation);
     void HandleChannelEvent(const std::string& event_name, const std::string& payload);
     void HandleDirectEvent(const std::string& event_name, const std::string& payload);
     void HandleC2CEvent(const std::string& event_name, const std::string& payload);
     void HandleGroupEvent(const std::string& event_name, const std::string& payload);
+    void ReportTerminalState(const std::string& event_name,
+                             const std::string& payload);
+    void ScheduleClientRebuild(std::uint64_t generation,
+                               const std::string& reason);
+    void StopInternal(bool external_request);
+    void TrimTargetCacheLocked();
+    void ClearMessageTargetCache();
 
     void PublishMessage(const std::string& sender_id,
                         const std::string& chat_id,
@@ -67,9 +80,16 @@ private:
     std::shared_ptr<qqbot::openapi::v1::OpenAPIV1Client> openapi_v1_;
     std::shared_ptr<qqbot::websocket::WebSocketClient> websocket_;
     std::atomic<bool> running_{false};
+    std::atomic<bool> rebuild_in_progress_{false};
+    std::atomic<bool> external_stop_requested_{false};
+    std::uint64_t callback_generation_{0};
+    mutable std::mutex lifecycle_mutex_;
     mutable std::mutex target_mutex_;
+    std::thread rebuild_thread_;
     std::unordered_map<std::string, TargetContext> message_targets_;
     std::unordered_map<std::string, TargetContext> chat_targets_;
+    static constexpr std::size_t kMaxMessageTargets = 1024;
+    static constexpr std::size_t kMaxChatTargets = 256;
 };
 
 }  // namespace kabot::channels
