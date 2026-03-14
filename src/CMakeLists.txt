@@ -238,6 +238,7 @@ set(KABOT_SOURCES
   channels/channel_manager.cpp
   cron/cron_service.cpp
   heartbeat/heartbeat_service.cpp
+  relay/relay_manager.cpp
   session/session_manager.cpp
   utils/logging.cpp
 )

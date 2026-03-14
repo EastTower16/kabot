@@ -119,6 +119,89 @@ void ApplyAgentDefaults(AgentDefaults& target, const nlohmann::json& source) {
     }
 }
 
+void ApplyRelayConnectionDefaults(RelayConnectionDefaults& target, const nlohmann::json& source) {
+    if (!source.is_object()) {
+        return;
+    }
+    if (source.contains("scheme") && source["scheme"].is_string()) {
+        target.scheme = source["scheme"].get<std::string>();
+    }
+    if (source.contains("host") && source["host"].is_string()) {
+        target.host = source["host"].get<std::string>();
+    }
+    if (source.contains("port") && source["port"].is_number_integer()) {
+        target.port = source["port"].get<int>();
+    }
+    if (source.contains("path") && source["path"].is_string()) {
+        target.path = source["path"].get<std::string>();
+    }
+    if (source.contains("useTls") && source["useTls"].is_boolean()) {
+        target.use_tls = source["useTls"].get<bool>();
+    }
+    if (source.contains("skipTlsVerify") && source["skipTlsVerify"].is_boolean()) {
+        target.skip_tls_verify = source["skipTlsVerify"].get<bool>();
+    }
+    if (source.contains("heartbeatIntervalS") && source["heartbeatIntervalS"].is_number_integer()) {
+        target.heartbeat_interval_s = source["heartbeatIntervalS"].get<int>();
+    }
+    if (source.contains("reconnectInitialDelayMs") && source["reconnectInitialDelayMs"].is_number_integer()) {
+        target.reconnect_initial_delay_ms = source["reconnectInitialDelayMs"].get<int>();
+    }
+    if (source.contains("reconnectMaxDelayMs") && source["reconnectMaxDelayMs"].is_number_integer()) {
+        target.reconnect_max_delay_ms = source["reconnectMaxDelayMs"].get<int>();
+    }
+}
+
+void ApplyRelayManagedAgentConfig(RelayManagedAgentConfig& target, const nlohmann::json& source) {
+    if (!source.is_object()) {
+        return;
+    }
+    if (source.contains("name") && source["name"].is_string()) {
+        target.name = source["name"].get<std::string>();
+    }
+    if (source.contains("enabled") && source["enabled"].is_boolean()) {
+        target.enabled = source["enabled"].get<bool>();
+    }
+    if (source.contains("localAgent") && source["localAgent"].is_string()) {
+        target.local_agent = source["localAgent"].get<std::string>();
+    } else if (source.contains("agent") && source["agent"].is_string()) {
+        target.local_agent = source["agent"].get<std::string>();
+    }
+    if (source.contains("agentId") && source["agentId"].is_string()) {
+        target.agent_id = source["agentId"].get<std::string>();
+    }
+    if (source.contains("token") && source["token"].is_string()) {
+        target.token = source["token"].get<std::string>();
+    }
+    if (source.contains("scheme") && source["scheme"].is_string()) {
+        target.scheme = source["scheme"].get<std::string>();
+    }
+    if (source.contains("host") && source["host"].is_string()) {
+        target.host = source["host"].get<std::string>();
+    }
+    if (source.contains("port") && source["port"].is_number_integer()) {
+        target.port = source["port"].get<int>();
+    }
+    if (source.contains("path") && source["path"].is_string()) {
+        target.path = source["path"].get<std::string>();
+    }
+    if (source.contains("useTls") && source["useTls"].is_boolean()) {
+        target.use_tls = source["useTls"].get<bool>();
+    }
+    if (source.contains("skipTlsVerify") && source["skipTlsVerify"].is_boolean()) {
+        target.skip_tls_verify = source["skipTlsVerify"].get<bool>();
+    }
+    if (source.contains("heartbeatIntervalS") && source["heartbeatIntervalS"].is_number_integer()) {
+        target.heartbeat_interval_s = source["heartbeatIntervalS"].get<int>();
+    }
+    if (source.contains("reconnectInitialDelayMs") && source["reconnectInitialDelayMs"].is_number_integer()) {
+        target.reconnect_initial_delay_ms = source["reconnectInitialDelayMs"].get<int>();
+    }
+    if (source.contains("reconnectMaxDelayMs") && source["reconnectMaxDelayMs"].is_number_integer()) {
+        target.reconnect_max_delay_ms = source["reconnectMaxDelayMs"].get<int>();
+    }
+}
+
 void ApplyBindingConfig(ChannelBindingConfig& target, const nlohmann::json& source) {
     if (!source.is_object()) {
         return;
@@ -250,6 +333,59 @@ void NormalizeConfig(Config& config, const AgentDefaults& previous_defaults) {
         ApplyRuntimeAgentDefaults(agent, previous_defaults, config.agents.defaults);
     }
 
+    if (config.relay.defaults.path.empty()) {
+        config.relay.defaults.path = "/ws/agent";
+    } else if (config.relay.defaults.path.front() != '/') {
+        config.relay.defaults.path = "/" + config.relay.defaults.path;
+    }
+    if (config.relay.defaults.use_tls) {
+        config.relay.defaults.scheme = "wss";
+        if (config.relay.defaults.port == 8080) {
+            config.relay.defaults.port = 443;
+        }
+    } else if (config.relay.defaults.scheme.empty()) {
+        config.relay.defaults.scheme = "ws";
+    }
+
+    for (auto& relay_agent : config.relay.managed_agents) {
+        if (relay_agent.local_agent.empty()) {
+            relay_agent.local_agent = relay_agent.name;
+        }
+        if (relay_agent.local_agent.empty() && !config.agents.instances.empty()) {
+            relay_agent.local_agent = config.agents.instances.front().name;
+        }
+        if (relay_agent.scheme.empty()) {
+            relay_agent.scheme = config.relay.defaults.scheme;
+        }
+        if (relay_agent.host.empty()) {
+            relay_agent.host = config.relay.defaults.host;
+        }
+        if (relay_agent.port <= 0) {
+            relay_agent.port = config.relay.defaults.port;
+        }
+        if (relay_agent.path.empty()) {
+            relay_agent.path = config.relay.defaults.path;
+        } else if (relay_agent.path.front() != '/') {
+            relay_agent.path = "/" + relay_agent.path;
+        }
+        relay_agent.use_tls = relay_agent.use_tls || config.relay.defaults.use_tls || relay_agent.scheme == "wss";
+        relay_agent.skip_tls_verify = relay_agent.skip_tls_verify || config.relay.defaults.skip_tls_verify;
+        if (relay_agent.use_tls && relay_agent.scheme != "wss") {
+            relay_agent.scheme = "wss";
+        } else if (!relay_agent.use_tls && relay_agent.scheme.empty()) {
+            relay_agent.scheme = "ws";
+        }
+        if (relay_agent.heartbeat_interval_s <= 0) {
+            relay_agent.heartbeat_interval_s = config.relay.defaults.heartbeat_interval_s;
+        }
+        if (relay_agent.reconnect_initial_delay_ms <= 0) {
+            relay_agent.reconnect_initial_delay_ms = config.relay.defaults.reconnect_initial_delay_ms;
+        }
+        if (relay_agent.reconnect_max_delay_ms <= 0) {
+            relay_agent.reconnect_max_delay_ms = config.relay.defaults.reconnect_max_delay_ms;
+        }
+    }
+
     if (config.channels.instances.empty()) {
         if (config.channels.telegram.enabled) {
             ChannelInstanceConfig instance{};
@@ -362,6 +498,24 @@ void ApplyConfigFromJson(Config& config, const nlohmann::json& data) {
                 }
                 ApplyAgentDefaults(agent, item);
                 config.agents.instances.push_back(agent);
+            }
+        }
+    }
+
+    if (data.contains("relay") && data["relay"].is_object()) {
+        const auto& relay = data["relay"];
+        if (relay.contains("defaults") && relay["defaults"].is_object()) {
+            ApplyRelayConnectionDefaults(config.relay.defaults, relay["defaults"]);
+        }
+        if (relay.contains("managedAgents") && relay["managedAgents"].is_array()) {
+            config.relay.managed_agents.clear();
+            for (const auto& item : relay["managedAgents"]) {
+                if (!item.is_object()) {
+                    continue;
+                }
+                RelayManagedAgentConfig relay_agent{};
+                ApplyRelayManagedAgentConfig(relay_agent, item);
+                config.relay.managed_agents.push_back(relay_agent);
             }
         }
     }
@@ -949,6 +1103,49 @@ std::vector<std::string> ValidateConfig(const Config& config) {
             errors.push_back("channel instance has no bound agent: " + channel.name);
         } else if (!config.FindAgent(channel.binding.agent)) {
             errors.push_back("channel instance " + channel.name + " references unknown agent: " + channel.binding.agent);
+        }
+    }
+
+    std::set<std::string> relay_agent_names;
+    for (const auto& relay_agent : config.relay.managed_agents) {
+        if (relay_agent.name.empty()) {
+            errors.push_back("relay managed agent name must not be empty");
+            continue;
+        }
+        if (!relay_agent_names.insert(relay_agent.name).second) {
+            errors.push_back("duplicate relay managed agent name: " + relay_agent.name);
+        }
+        if (relay_agent.local_agent.empty()) {
+            errors.push_back("relay managed agent " + relay_agent.name + " has no bound local agent");
+        } else if (!config.FindAgent(relay_agent.local_agent)) {
+            errors.push_back("relay managed agent " + relay_agent.name + " references unknown local agent: " + relay_agent.local_agent);
+        }
+        if (relay_agent.agent_id.empty()) {
+            errors.push_back("relay managed agent " + relay_agent.name + " is missing agentId");
+        }
+        if (relay_agent.token.empty()) {
+            errors.push_back("relay managed agent " + relay_agent.name + " is missing token");
+        }
+        if (relay_agent.host.empty()) {
+            errors.push_back("relay managed agent " + relay_agent.name + " is missing host");
+        }
+        if (relay_agent.path.empty() || relay_agent.path.front() != '/') {
+            errors.push_back("relay managed agent " + relay_agent.name + " requires path starting with /");
+        }
+        if (relay_agent.port <= 0) {
+            errors.push_back("relay managed agent " + relay_agent.name + " has invalid port");
+        }
+        if (relay_agent.heartbeat_interval_s <= 0) {
+            errors.push_back("relay managed agent " + relay_agent.name + " has invalid heartbeatIntervalS");
+        }
+        if (relay_agent.reconnect_initial_delay_ms <= 0) {
+            errors.push_back("relay managed agent " + relay_agent.name + " has invalid reconnectInitialDelayMs");
+        }
+        if (relay_agent.reconnect_max_delay_ms < relay_agent.reconnect_initial_delay_ms) {
+            errors.push_back("relay managed agent " + relay_agent.name + " has reconnectMaxDelayMs smaller than reconnectInitialDelayMs");
+        }
+        if (relay_agent.scheme != "ws" && relay_agent.scheme != "wss") {
+            errors.push_back("relay managed agent " + relay_agent.name + " has unsupported scheme: " + relay_agent.scheme);
         }
     }
     return errors;

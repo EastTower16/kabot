@@ -165,6 +165,27 @@ void TestHandleInboundPreservesRoutingFields() {
     Expect(outbound.chat_id == "chat-3", "expected outbound to preserve chat_id");
 }
 
+void TestProcessDirectRoutesToNamedAgent() {
+    kabot::bus::MessageBus bus;
+    StubProvider provider;
+    const auto config = BuildConfig();
+    kabot::agent::AgentRegistry registry(bus, provider, config, nullptr);
+
+    const auto result = registry.ProcessDirect("ops-agent", "hello from relay", "relay:ops-agent:cmd-1");
+    Expect(result == "stub", "expected ProcessDirect to route relay command to named local agent");
+}
+
+void TestProcessDirectRejectsUnknownAgent() {
+    kabot::bus::MessageBus bus;
+    StubProvider provider;
+    const auto config = BuildConfig();
+    kabot::agent::AgentRegistry registry(bus, provider, config, nullptr);
+
+    const auto result = registry.ProcessDirect("missing-agent", "hello from relay", "relay:missing-agent:cmd-1");
+    Expect(result == "No agent is configured to handle this request.",
+           "expected ProcessDirect to reject unknown relay local agent");
+}
+
 void TestCronToolCapturesAgentChannelAndToContext() {
     const auto store_path = std::filesystem::temp_directory_path() / "kabot_routing_tests_cron" / "store.json";
     std::filesystem::remove(store_path);
@@ -220,6 +241,8 @@ int main() {
     TestResolveAgentNameFromExplicitMetadataOverride();
     TestSessionKeyIsolation();
     TestHandleInboundPreservesRoutingFields();
+    TestProcessDirectRoutesToNamedAgent();
+    TestProcessDirectRejectsUnknownAgent();
     TestCronToolCapturesAgentChannelAndToContext();
     TestMessageOnlyToolProfileRegistersOnlyMessageTool();
     std::cout << "routing_tests passed" << std::endl;

@@ -33,6 +33,7 @@
 #include "channels/channel_manager.hpp"
 #include "config/config_loader.hpp"
 #include "heartbeat/heartbeat_service.hpp"
+#include "relay/relay_manager.hpp"
 #include "session/session_manager.hpp"
 #include "providers/llm_provider.hpp"
 #include "httplib.h"
@@ -313,6 +314,7 @@ int RunGateway() {
     };
 
     kabot::channels::ChannelManager channels(config, bus);
+    kabot::relay::RelayManager relay(config, agents);
 
     kabot::session::SessionManager sessions(config.agents.defaults.workspace);
 
@@ -414,6 +416,7 @@ int RunGateway() {
     });
     agents.Start();
     channels.StartAll();
+    relay.Start();
     heartbeat.Start();
 
     LOG_INFO("kabot gateway started. Press Ctrl+C to stop.");
@@ -441,6 +444,7 @@ int RunGateway() {
         http_thread.join();
     }
     heartbeat.Stop();
+    relay.Stop();
     channels.StopAll();
     agents.Stop();
     RemovePidFile();

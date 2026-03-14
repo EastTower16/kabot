@@ -259,6 +259,187 @@ void TestAgentInstancesInheritRuntimeDefaults() {
            "expected runtime brave api key to be inherited by agent instance");
 }
 
+void TestLoadConfigParsesRelayManagedAgents() {
+    const auto temp_dir = std::filesystem::temp_directory_path() / "kabot_config_tests_relay";
+    std::filesystem::create_directories(temp_dir);
+    const auto config_path = temp_dir / "config.json";
+
+    std::ofstream output(config_path);
+    output << R"({
+  "agents": {
+    "instances": [
+      {
+        "name": "default"
+      },
+      {
+        "name": "ops-agent"
+      }
+    ]
+  },
+  "relay": {
+    "defaults": {
+      "host": "relay.example.com",
+      "port": 443,
+      "path": "/ws/agent",
+      "useTls": true,
+      "heartbeatIntervalS": 9,
+      "reconnectInitialDelayMs": 1500,
+      "reconnectMaxDelayMs": 9000
+    },
+    "managedAgents": [
+      {
+        "name": "relay-default",
+        "localAgent": "default",
+        "agentId": "agent-default",
+        "token": "token-default"
+      },
+      {
+        "name": "relay-ops",
+        "localAgent": "ops-agent",
+        "agentId": "agent-ops",
+        "token": "token-ops",
+        "enabled": false,
+        "heartbeatIntervalS": 12
+      }
+    ]
+  }
+})";
+    output.close();
+
+    const auto config = kabot::config::LoadConfig(config_path);
+    Expect(config.relay.managed_agents.size() == 2, "expected two relay managed agents");
+    Expect(config.relay.managed_agents.front().host == "relay.example.com", "expected relay host to inherit defaults");
+    Expect(config.relay.managed_agents.front().port == 443, "expected relay port to inherit defaults");
+    Expect(config.relay.managed_agents.front().path == "/ws/agent", "expected relay path to inherit defaults");
+    Expect(config.relay.managed_agents.front().scheme == "wss", "expected tls relay scheme to normalize to wss");
+    Expect(config.relay.managed_agents.front().local_agent == "default", "expected local agent binding to load");
+    Expect(config.relay.managed_agents.front().heartbeat_interval_s == 9, "expected heartbeat interval to inherit defaults");
+    Expect(!config.relay.managed_agents.back().enabled, "expected disabled relay managed agent to be preserved");
+    Expect(config.relay.managed_agents.back().heartbeat_interval_s == 12, "expected per-agent relay heartbeat override to load");
+}
+
+void TestLoadConfigDefaultsRelayLocalAgentToManagedAgentName() {
+    const auto temp_dir = std::filesystem::temp_directory_path() / "kabot_config_test_relay_local_default";
+    std::filesystem::create_directories(temp_dir);
+    const auto config_path = temp_dir / "config.json";
+
+    std::ofstream output(config_path);
+    output << R"({
+  "agents": {
+    "instances": [
+      {
+        "name": "default"
+      },
+      {
+        "name": "ops-agent"
+      }
+    ]
+  },
+  "relay": {
+    "defaults": {
+      "host": "relay.example.com",
+      "port": 443,
+      "path": "/ws/agent",
+      "useTls": true,
+      "heartbeatIntervalS": 9,
+      "reconnectInitialDelayMs": 1000,
+      "reconnectMaxDelayMs": 5000
+    },
+    "managedAgents": [
+      {
+        "name": "ops-agent",
+        "agentId": "agent-ops",
+        "token": "token-ops"
+      }
+    ]
+  }
+})";
+    output.close();
+
+    const auto config = kabot::config::LoadConfig(config_path);
+    Expect(config.relay.managed_agents.size() == 1, "expected one relay managed agent");
+    Expect(config.relay.managed_agents.front().local_agent == "ops-agent",
+           "expected relay managed agent to default localAgent to its own name");
+}
+
+void TestValidateConfigRejectsRelayManagedAgentMissingFields() {
+    kabot::config::Config config{};
+
+    kabot::config::AgentInstanceConfig agent{};
+    agent.name = "default";
+    config.agents.instances.push_back(agent);
+
+    kabot::config::RelayManagedAgentConfig relay_agent{};
+    relay_agent.name = "relay-default";
+    relay_agent.local_agent = "default";
+    relay_agent.host = "relay.example.com";
+    relay_agent.port = 443;
+    relay_agent.path = "/ws/agent";
+    relay_agent.scheme = "wss";
+    relay_agent.heartbeat_interval_s = 10;
+    relay_agent.reconnect_initial_delay_ms = 1000;
+    relay_agent.reconnect_max_delay_ms = 5000;
+    config.relay.managed_agents.push_back(relay_agent);
+
+    const auto errors = kabot::config::ValidateConfig(config);
+    Expect(!errors.empty(), "expected missing relay credentials to fail validation");
+}
+
+void TestValidateConfigRejectsDuplicateRelayManagedAgentNames() {
+    kabot::config::Config config{};
+
+    kabot::config::AgentInstanceConfig agent{};
+    agent.name = "default";
+    config.agents.instances.push_back(agent);
+
+    kabot::config::RelayManagedAgentConfig relay_a{};
+    relay_a.name = "relay-default";
+    relay_a.local_agent = "default";
+    relay_a.agent_id = "a";
+    relay_a.token = "ta";
+    relay_a.host = "relay.example.com";
+    relay_a.port = 443;
+    relay_a.path = "/ws/agent";
+    relay_a.scheme = "wss";
+    relay_a.heartbeat_interval_s = 10;
+    relay_a.reconnect_initial_delay_ms = 1000;
+    relay_a.reconnect_max_delay_ms = 5000;
+    config.relay.managed_agents.push_back(relay_a);
+
+    auto relay_b = relay_a;
+    relay_b.agent_id = "b";
+    relay_b.token = "tb";
+    config.relay.managed_agents.push_back(relay_b);
+
+    const auto errors = kabot::config::ValidateConfig(config);
+    Expect(!errors.empty(), "expected duplicate relay managed agent names to fail validation");
+}
+
+void TestValidateConfigRejectsUnknownRelayLocalAgent() {
+    kabot::config::Config config{};
+
+    kabot::config::AgentInstanceConfig agent{};
+    agent.name = "default";
+    config.agents.instances.push_back(agent);
+
+    kabot::config::RelayManagedAgentConfig relay_agent{};
+    relay_agent.name = "relay-default";
+    relay_agent.local_agent = "missing-agent";
+    relay_agent.agent_id = "a";
+    relay_agent.token = "ta";
+    relay_agent.host = "relay.example.com";
+    relay_agent.port = 443;
+    relay_agent.path = "/ws/agent";
+    relay_agent.scheme = "wss";
+    relay_agent.heartbeat_interval_s = 10;
+    relay_agent.reconnect_initial_delay_ms = 1000;
+    relay_agent.reconnect_max_delay_ms = 5000;
+    config.relay.managed_agents.push_back(relay_agent);
+
+    const auto errors = kabot::config::ValidateConfig(config);
+    Expect(!errors.empty(), "expected unknown relay local agent to fail validation");
+}
+
 }  // namespace
 
 int main() {
@@ -271,6 +452,11 @@ int main() {
     TestLoadConfigParsesQQBotInstance();
     TestLegacyConfigCompatibility();
     TestAgentInstancesInheritRuntimeDefaults();
+    TestLoadConfigParsesRelayManagedAgents();
+    TestLoadConfigDefaultsRelayLocalAgentToManagedAgentName();
+    TestValidateConfigRejectsRelayManagedAgentMissingFields();
+    TestValidateConfigRejectsDuplicateRelayManagedAgentNames();
+    TestValidateConfigRejectsUnknownRelayLocalAgent();
     std::cout << "config_tests passed" << std::endl;
     return 0;
 }

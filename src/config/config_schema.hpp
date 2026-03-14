@@ -97,6 +97,40 @@ struct AgentsConfig {
     std::vector<AgentInstanceConfig> instances;
 };
 
+struct RelayConnectionDefaults {
+    std::string scheme = "ws";
+    std::string host = "127.0.0.1";
+    int port = 8080;
+    std::string path = "/ws/agent";
+    bool use_tls = false;
+    bool skip_tls_verify = false;
+    int heartbeat_interval_s = 10;
+    int reconnect_initial_delay_ms = 1000;
+    int reconnect_max_delay_ms = 30000;
+};
+
+struct RelayManagedAgentConfig {
+    std::string name;
+    bool enabled = true;
+    std::string local_agent;
+    std::string agent_id;
+    std::string token;
+    std::string scheme;
+    std::string host;
+    int port = 0;
+    std::string path;
+    bool use_tls = false;
+    bool skip_tls_verify = false;
+    int heartbeat_interval_s = 0;
+    int reconnect_initial_delay_ms = 0;
+    int reconnect_max_delay_ms = 0;
+};
+
+struct RelayConfig {
+    RelayConnectionDefaults defaults;
+    std::vector<RelayManagedAgentConfig> managed_agents;
+};
+
 struct HeartbeatConfig {
     bool enabled = true;
     int interval_s = 30 * 60;
@@ -125,6 +159,7 @@ struct LoggingConfig {
 
 struct Config {
     AgentsConfig agents;
+    RelayConfig relay;
     ChannelsConfig channels;
     HeartbeatConfig heartbeat;
     ProvidersConfig providers;
@@ -144,6 +179,15 @@ struct Config {
         for (const auto& channel : channels.instances) {
             if (channel.name == name) {
                 return &channel;
+            }
+        }
+        return nullptr;
+    }
+
+    const RelayManagedAgentConfig* FindRelayManagedAgent(const std::string& name) const {
+        for (const auto& relay_agent : relay.managed_agents) {
+            if (relay_agent.name == name) {
+                return &relay_agent;
             }
         }
         return nullptr;

@@ -6,7 +6,40 @@
       "maxTokens": 8192,
       "temperature": 0.7,
       "maxToolIterations": 20
-    }
+    },
+    "instances": [
+      {
+        "name": "default"
+      },
+      {
+        "name": "ops-agent",
+        "workspace": "/Users/kothchen/.kabot/workspace/ops"
+      }
+    ]
+  },
+  "relay": {
+    "defaults": {
+      "host": "relay.example.com",
+      "port": 443,
+      "path": "/ws/agent",
+      "useTls": true,
+      "heartbeatIntervalS": 10,
+      "reconnectInitialDelayMs": 1000,
+      "reconnectMaxDelayMs": 15000
+    },
+    "managedAgents": [
+      {
+        "name": "default",
+        "agentId": "agent-default",
+        "token": "RELAY_AGENT_TOKEN"
+      },
+      {
+        "name": "ops-agent",
+        "agentId": "agent-ops",
+        "token": "RELAY_OPS_TOKEN",
+        "enabled": false
+      }
+    ]
   },
   "providers": {
     "openrouter": {
@@ -18,7 +51,10 @@
     "telegram": {
       "enabled": true,
       "token": "8243851214:xxxx-xxx",
-      "allowFrom": ["kothchen"]
+      "allowFrom": ["kothchen"],
+      "binding": {
+        "agent": "default"
+      }
     }
   },
   "tools": {
