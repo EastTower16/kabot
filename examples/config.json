@@ -19,25 +19,28 @@
   },
   "relay": {
     "defaults": {
-      "host": "relay.example.com",
-      "port": 443,
+      "host": "120.48.49.190",
+      "port": 3000,
       "path": "/ws/agent",
       "useTls": true,
+      "skipTlsVerify": true,
       "heartbeatIntervalS": 10,
       "reconnectInitialDelayMs": 1000,
       "reconnectMaxDelayMs": 15000
     },
     "managedAgents": [
       {
-        "name": "default",
+        "name": "阿汤(飞书)",
+        "localAgent": "master-agent",
         "agentId": "agent-default",
-        "token": "RELAY_AGENT_TOKEN"
+        "token": ""
       },
       {
-        "name": "ops-agent",
-        "agentId": "agent-ops",
-        "token": "RELAY_OPS_TOKEN",
-        "enabled": false
+        "name": "阿圆(QQ)",
+        "localAgent": "msg-agent",
+        "agentId": "agent-msg",
+        "token": "",
+        "enabled": true
       }
     ]
   },
