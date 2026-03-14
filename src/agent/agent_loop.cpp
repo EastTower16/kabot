@@ -43,6 +43,20 @@ std::string ExtractMemoryBlock(const std::string& content) {
     return Trim(raw);
 }
 
+std::string PhaseSummary(DirectExecutionPhase phase) {
+    switch (phase) {
+    case DirectExecutionPhase::kReceived:
+        return "Received message";
+    case DirectExecutionPhase::kProcessing:
+        return "Processing message";
+    case DirectExecutionPhase::kCallingTools:
+        return "Calling tools";
+    case DirectExecutionPhase::kReplying:
+        return "Preparing reply";
+    }
+    return "Processing message";
+}
+
 std::string StripMemoryBlock(const std::string& content) {
     const std::string start_tag = "<kabot_memory>";
     const std::string end_tag = "</kabot_memory>";
@@ -223,6 +237,10 @@ void AppendGuardrailUserMessage(std::vector<kabot::providers::Message>& messages
 
 }  // namespace
 
+std::string DirectExecutionPhaseSummary(DirectExecutionPhase phase) {
+    return PhaseSummary(phase);
+}
+
 AgentLoop::AgentLoop(
     kabot::bus::MessageBus& bus,
     kabot::providers::LLMProvider& provider,
@@ -259,13 +277,19 @@ void AgentLoop::Stop() {
     running_ = false;
 }
 
-kabot::bus::OutboundMessage AgentLoop::HandleInbound(const kabot::bus::InboundMessage& msg) {
+kabot::bus::OutboundMessage AgentLoop::HandleInbound(
+    const kabot::bus::InboundMessage& msg,
+    const DirectExecutionObserver& observer,
+    const std::function<void(bool, const std::string&)>& completion) {
     kabot::bus::OutboundMessage outbound{};
     try {
         if (msg.channel == "system") {
             outbound = ProcessSystemMessage(msg);
         } else {
-            outbound = ProcessMessage(msg);
+            outbound = ProcessMessage(msg, observer);
+        }
+        if (completion) {
+            completion(true, outbound.content);
         }
     } catch (const std::exception& ex) {
         outbound.channel = msg.channel;
@@ -273,12 +297,18 @@ kabot::bus::OutboundMessage AgentLoop::HandleInbound(const kabot::bus::InboundMe
         outbound.agent_name = msg.agent_name;
         outbound.chat_id = msg.chat_id;
         outbound.content = std::string("Error: ") + ex.what();
+        if (completion) {
+            completion(false, ex.what());
+        }
     } catch (...) {
         outbound.channel = msg.channel;
         outbound.channel_instance = msg.channel_instance;
         outbound.agent_name = msg.agent_name;
         outbound.chat_id = msg.chat_id;
         outbound.content = "Error: unknown exception";
+        if (completion) {
+            completion(false, "unknown exception");
+        }
     }
     return outbound;
 }
@@ -287,11 +317,24 @@ std::vector<std::string> AgentLoop::RegisteredTools() const {
     return tools_.List();
 }
 
-std::string AgentLoop::ProcessDirect(const std::string& content, const std::string& session_key) {
+std::string AgentLoop::ProcessDirect(const std::string& content,
+                                     const std::string& session_key,
+                                     const DirectExecutionObserver& observer) {
     std::lock_guard<std::mutex> guard(process_mutex_);
     auto session = sessions_.GetOrCreate(session_key);
     auto history = session.GetHistory(static_cast<std::size_t>(config_.max_history_messages));
     auto messages = context_.BuildMessages(history, content, {});
+    DirectExecutionPhase last_phase = DirectExecutionPhase::kReceived;
+    const auto notify_phase = [&](DirectExecutionPhase phase) {
+        if (!observer) {
+            return;
+        }
+        if (phase == last_phase) {
+            return;
+        }
+        observer(phase);
+        last_phase = phase;
+    };
 
     int iteration = 0;
     std::string final_content;
@@ -304,6 +347,10 @@ std::string AgentLoop::ProcessDirect(const std::string& content, const std::stri
     LOG_INFO("[agent] process_direct tool_guardrail={} session={}",
              (requires_tool_guardrail ? "true" : "false"),
              session_key);
+    if (observer) {
+        observer(DirectExecutionPhase::kReceived);
+    }
+    notify_phase(DirectExecutionPhase::kProcessing);
 
     while (iteration < config_.max_iterations) {
         iteration += 1;
@@ -316,6 +363,7 @@ std::string AgentLoop::ProcessDirect(const std::string& content, const std::stri
 
         if (response.HasToolCalls()) {
             tool_called = true;
+            notify_phase(DirectExecutionPhase::kCallingTools);
             messages = context_.AddAssistantMessage(messages, response.content, response.tool_calls);
             session.AddMessage("assistant", response.content, response.tool_calls);
             for (const auto& call : response.tool_calls) {
@@ -326,6 +374,7 @@ std::string AgentLoop::ProcessDirect(const std::string& content, const std::stri
                 messages = context_.AddToolResult(messages, call.id, call.name, result);
                 session.AddToolMessage(call.id, call.name, result);
             }
+            notify_phase(DirectExecutionPhase::kProcessing);
         } else {
             if (requires_tool_guardrail && !tool_called && !guardrail_retry_used) {
                 guardrail_retry_used = true;
@@ -335,6 +384,7 @@ std::string AgentLoop::ProcessDirect(const std::string& content, const std::stri
                 AppendGuardrailUserMessage(messages, content);
                 continue;
             }
+            notify_phase(DirectExecutionPhase::kReplying);
             final_content = response.content;
             break;
         }
@@ -359,7 +409,8 @@ std::string AgentLoop::ProcessDirect(const std::string& content, const std::stri
     return final_content;
 }
 
-kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundMessage& msg) {
+kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundMessage& msg,
+                                                      const DirectExecutionObserver& observer) {
     std::lock_guard<std::mutex> guard(process_mutex_);
     const auto send_typing = [&]() {
         if (msg.channel != "telegram") {
@@ -427,6 +478,21 @@ kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundM
     LOG_INFO("[agent] process_message tool_guardrail={} session={}",
              (requires_tool_guardrail ? "true" : "false"),
              msg.SessionKey());
+    DirectExecutionPhase last_phase = DirectExecutionPhase::kReceived;
+    const auto notify_phase = [&](DirectExecutionPhase phase) {
+        if (!observer) {
+            return;
+        }
+        if (phase == last_phase) {
+            return;
+        }
+        observer(phase);
+        last_phase = phase;
+    };
+    if (observer) {
+        observer(DirectExecutionPhase::kReceived);
+    }
+    notify_phase(DirectExecutionPhase::kProcessing);
 
     while (iteration < config_.max_iterations) {
         iteration += 1;
@@ -439,6 +505,7 @@ kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundM
 
         if (response.HasToolCalls()) {
             tool_called = true;
+            notify_phase(DirectExecutionPhase::kCallingTools);
             messages = context_.AddAssistantMessage(messages, response.content, response.tool_calls);
             session.AddMessage("assistant", response.content, response.tool_calls);
             for (const auto& call : response.tool_calls) {
@@ -449,6 +516,7 @@ kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundM
                 messages = context_.AddToolResult(messages, call.id, call.name, result);
                 session.AddToolMessage(call.id, call.name, result);
             }
+            notify_phase(DirectExecutionPhase::kProcessing);
         } else {
             if (requires_tool_guardrail && !tool_called && !guardrail_retry_used) {
                 guardrail_retry_used = true;
@@ -459,6 +527,7 @@ kabot::bus::OutboundMessage AgentLoop::ProcessMessage(const kabot::bus::InboundM
                 send_typing();
                 continue;
             }
+            notify_phase(DirectExecutionPhase::kReplying);
             final_content = response.content;
             break;
         }

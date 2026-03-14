@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -14,6 +15,17 @@
 
 namespace kabot::agent {
 
+enum class DirectExecutionPhase {
+    kReceived,
+    kProcessing,
+    kCallingTools,
+    kReplying,
+};
+
+using DirectExecutionObserver = std::function<void(DirectExecutionPhase)>;
+
+std::string DirectExecutionPhaseSummary(DirectExecutionPhase phase);
+
 class AgentLoop {
 public:
     AgentLoop(
@@ -25,8 +37,12 @@ public:
         kabot::cron::CronService* cron = nullptr);
     void Run();
     void Stop();
-    kabot::bus::OutboundMessage HandleInbound(const kabot::bus::InboundMessage& msg);
-    std::string ProcessDirect(const std::string& content, const std::string& session_key);
+    kabot::bus::OutboundMessage HandleInbound(const kabot::bus::InboundMessage& msg,
+                                              const DirectExecutionObserver& observer = {},
+                                              const std::function<void(bool, const std::string&)>& completion = {});
+    std::string ProcessDirect(const std::string& content,
+                              const std::string& session_key,
+                              const DirectExecutionObserver& observer = {});
     std::vector<std::string> RegisteredTools() const;
 
 private:
@@ -43,7 +59,8 @@ private:
     bool running_ = false;
     std::mutex process_mutex_;
 
-    kabot::bus::OutboundMessage ProcessMessage(const kabot::bus::InboundMessage& msg);
+    kabot::bus::OutboundMessage ProcessMessage(const kabot::bus::InboundMessage& msg,
+                                               const DirectExecutionObserver& observer = {});
     kabot::bus::OutboundMessage ProcessSystemMessage(const kabot::bus::InboundMessage& msg);
     void RegisterDefaultTools();
     void AppendMemoryEntry(const std::string& session_key,

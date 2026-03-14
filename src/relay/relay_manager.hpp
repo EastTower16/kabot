@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "agent/agent_registry.hpp"
@@ -27,6 +28,7 @@ private:
     kabot::config::Config config_;
     kabot::agent::AgentRegistry& agents_;
     std::vector<std::unique_ptr<Worker>> workers_;
+    std::unordered_map<std::string, Worker*> workers_by_local_agent_;
     std::atomic<bool> running_{false};
 };
 

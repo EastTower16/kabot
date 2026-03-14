@@ -266,6 +266,20 @@ Json BuildActivityPayload(const std::string& status,
     return payload;
 }
 
+std::string PhaseActivitySummary(kabot::agent::DirectExecutionPhase phase) {
+    switch (phase) {
+    case kabot::agent::DirectExecutionPhase::kReceived:
+        return "Received relay command";
+    case kabot::agent::DirectExecutionPhase::kProcessing:
+        return "Processing relay command";
+    case kabot::agent::DirectExecutionPhase::kCallingTools:
+        return "Calling tools";
+    case kabot::agent::DirectExecutionPhase::kReplying:
+        return "Preparing reply";
+    }
+    return "Executing relay command";
+}
+
 Json BuildAckPayload(const std::string& command_id) {
     return {
         {"type", "command.ack"},
@@ -320,6 +334,31 @@ public:
         CloseSession();
         if (worker_.joinable()) {
             worker_.join();
+        }
+    }
+
+    void ReportInboundPhase(kabot::agent::DirectExecutionPhase phase) {
+        try {
+            SendJson(BuildActivityPayload("busy", kabot::agent::DirectExecutionPhaseSummary(phase)));
+        } catch (const std::exception& ex) {
+            LOG_WARN("[relay] worker={} inbound phase report failed: {}", config_.name, ex.what());
+        } catch (...) {
+            LOG_WARN("[relay] worker={} inbound phase report failed", config_.name);
+        }
+    }
+
+    void ReportInboundCompletion(bool success, const std::string& summary) {
+        try {
+            if (success) {
+                SendJson(BuildActivityPayload("idle", "Idle"));
+            } else {
+                SendJson(BuildActivityPayload("error",
+                                              summary.empty() ? "channel execution failed" : summary));
+            }
+        } catch (const std::exception& ex) {
+            LOG_WARN("[relay] worker={} inbound completion report failed: {}", config_.name, ex.what());
+        } catch (...) {
+            LOG_WARN("[relay] worker={} inbound completion report failed", config_.name);
         }
     }
 
@@ -408,9 +447,13 @@ private:
         SendJson(BuildResultPayload(command_id, "running", std::string(), std::string(), 0));
 
         try {
+            const auto observer = [this, &command_id](kabot::agent::DirectExecutionPhase phase) {
+                SendJson(BuildActivityPayload("busy", PhaseActivitySummary(phase), command_id));
+            };
             const auto result = agents_.ProcessDirect(config_.local_agent,
                                                       payload,
-                                                      BuildSessionKey(config_, command_id));
+                                                      BuildSessionKey(config_, command_id),
+                                                      observer);
             SendJson(BuildResultPayload(command_id, "completed", "result", result, 100));
             SendJson(BuildActivityPayload("idle", "Idle"));
         } catch (const std::exception& ex) {
@@ -522,7 +565,25 @@ RelayManager::RelayManager(const kabot::config::Config& config,
     , agents_(agents) {
     for (const auto& relay_agent : config_.relay.managed_agents) {
         workers_.push_back(std::make_unique<Worker>(relay_agent, agents_));
+        if (!relay_agent.local_agent.empty()) {
+            workers_by_local_agent_[relay_agent.local_agent] = workers_.back().get();
+        }
     }
+    agents_.SetInboundExecutionReporter(
+        [this](const std::string& agent_name,
+               kabot::agent::DirectExecutionPhase phase,
+               bool success,
+               const std::string& summary) {
+            auto it = workers_by_local_agent_.find(agent_name);
+            if (it == workers_by_local_agent_.end() || it->second == nullptr) {
+                return;
+            }
+            if (summary.empty() && !success) {
+                it->second->ReportInboundPhase(phase);
+                return;
+            }
+            it->second->ReportInboundCompletion(success, summary);
+        });
 }
 
 RelayManager::~RelayManager() {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -15,6 +16,11 @@ namespace kabot::agent {
 
 class AgentRegistry {
 public:
+    using InboundExecutionReporter = std::function<void(const std::string&,
+                                                        DirectExecutionPhase,
+                                                        bool,
+                                                        const std::string&)>;
+
     AgentRegistry(kabot::bus::MessageBus& bus,
                   kabot::providers::LLMProvider& provider,
                   const kabot::config::Config& config,
@@ -22,11 +28,13 @@ public:
 
     void Start();
     void Stop();
+    void SetInboundExecutionReporter(InboundExecutionReporter reporter);
 
     kabot::bus::OutboundMessage HandleInbound(kabot::bus::InboundMessage msg);
     std::string ProcessDirect(const std::string& agent_name,
                               const std::string& content,
-                              const std::string& session_key);
+                              const std::string& session_key,
+                              const DirectExecutionObserver& observer = {});
     const kabot::config::AgentInstanceConfig* GetAgentConfig(const std::string& name) const;
     std::string ResolveAgentName(const kabot::bus::InboundMessage& msg) const;
     std::string DefaultAgentName() const;
@@ -40,6 +48,7 @@ private:
     kabot::config::Config config_;
     kabot::cron::CronService* cron_ = nullptr;
     std::unordered_map<std::string, std::unique_ptr<AgentLoop>> agents_;
+    InboundExecutionReporter inbound_reporter_;
     std::atomic<bool> running_{false};
     std::thread worker_;
 };

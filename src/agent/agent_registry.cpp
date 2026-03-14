@@ -25,6 +25,10 @@ AgentRegistry::AgentRegistry(kabot::bus::MessageBus& bus,
     InitAgents();
 }
 
+void AgentRegistry::SetInboundExecutionReporter(InboundExecutionReporter reporter) {
+    inbound_reporter_ = std::move(reporter);
+}
+
 void AgentRegistry::InitAgents() {
     agents_.clear();
     for (const auto& agent_config : config_.agents.instances) {
@@ -97,7 +101,17 @@ kabot::bus::OutboundMessage AgentRegistry::HandleInbound(kabot::bus::InboundMess
         return outbound;
     }
 
-    auto outbound = it->second->HandleInbound(msg);
+    const auto phase_observer = [this, agent_name = msg.agent_name](DirectExecutionPhase phase) {
+        if (inbound_reporter_) {
+            inbound_reporter_(agent_name, phase, false, std::string());
+        }
+    };
+    const auto completion = [this, agent_name = msg.agent_name](bool success, const std::string& summary) {
+        if (inbound_reporter_) {
+            inbound_reporter_(agent_name, DirectExecutionPhase::kReplying, success, summary);
+        }
+    };
+    auto outbound = it->second->HandleInbound(msg, phase_observer, completion);
     if (outbound.channel.empty()) {
         outbound.channel = msg.channel;
     }
@@ -115,13 +129,14 @@ kabot::bus::OutboundMessage AgentRegistry::HandleInbound(kabot::bus::InboundMess
 
 std::string AgentRegistry::ProcessDirect(const std::string& agent_name,
                                          const std::string& content,
-                                         const std::string& session_key) {
+                                         const std::string& session_key,
+                                         const DirectExecutionObserver& observer) {
     const auto resolved = agent_name.empty() ? DefaultAgentName() : agent_name;
     auto it = agents_.find(resolved);
     if (it == agents_.end()) {
         return "No agent is configured to handle this request.";
     }
-    return it->second->ProcessDirect(content, session_key);
+    return it->second->ProcessDirect(content, session_key, observer);
 }
 
 const kabot::config::AgentInstanceConfig* AgentRegistry::GetAgentConfig(const std::string& name) const {
