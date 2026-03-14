@@ -103,11 +103,27 @@ public:
 
     void Connect() override {
         const auto port = std::to_string(config_.port);
-        auto endpoints = resolver_.resolve(config_.host, port);
-        auto endpoint = net::connect(ws_.next_layer(), endpoints);
+        tcp::resolver::results_type endpoints;
+        try {
+            endpoints = resolver_.resolve(config_.host, port);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("resolve failed: ") + ex.what());
+        }
+
+        tcp::endpoint endpoint;
+        try {
+            endpoint = net::connect(ws_.next_layer(), endpoints);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("tcp connect failed: ") + ex.what());
+        }
+
         auto host = config_.host + ":" + std::to_string(endpoint.port());
         ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
-        ws_.handshake(host, BuildTarget(config_));
+        try {
+            ws_.handshake(host, BuildTarget(config_));
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("websocket handshake failed: ") + ex.what());
+        }
         ws_.text(true);
     }
 
@@ -146,8 +162,20 @@ public:
 
     void Connect() override {
         const auto port = std::to_string(config_.port);
-        auto endpoints = resolver_.resolve(config_.host, port);
-        auto endpoint = beast::get_lowest_layer(ws_).connect(endpoints);
+        tcp::resolver::results_type endpoints;
+        try {
+            endpoints = resolver_.resolve(config_.host, port);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("resolve failed: ") + ex.what());
+        }
+
+        tcp::endpoint endpoint;
+        try {
+            endpoint = beast::get_lowest_layer(ws_).connect(endpoints);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("tcp connect failed: ") + ex.what());
+        }
+
         auto host = config_.host + ":" + std::to_string(endpoint.port());
         if (!IsIpLiteral(config_.host)) {
             if (!SSL_set_tlsext_host_name(ws_.next_layer().native_handle(), config_.host.c_str())) {
@@ -155,8 +183,16 @@ public:
             }
         }
         ws_.set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
-        ws_.next_layer().handshake(ssl::stream_base::client);
-        ws_.handshake(host, BuildTarget(config_));
+        try {
+            ws_.next_layer().handshake(ssl::stream_base::client);
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("tls handshake failed: ") + ex.what());
+        }
+        try {
+            ws_.handshake(host, BuildTarget(config_));
+        } catch (const std::exception& ex) {
+            throw std::runtime_error(std::string("websocket handshake failed: ") + ex.what());
+        }
         ws_.text(true);
     }
 
